@@ -21,6 +21,7 @@ import (
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/cli/cli/v2/pkg/set"
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -44,6 +45,9 @@ type EditOptions struct {
 	AttachFlag  *attachments.Flag
 	AttachEvent *attachments.TelemetryEvent
 	Assets      []attachments.UserAsset
+
+	AddCopilotReviewer bool
+	ReviewEffort       string
 
 	shared.Editable
 }
@@ -97,6 +101,11 @@ func NewCmdEdit(f *cmdutil.Factory, telemetry ghtelemetry.InvocationRecorder, ru
 			The %[1]s--add-reviewer%[1]s and %[1]s--remove-reviewer%[1]s flags support
 			the following special value:
 			- %[1]s@copilot%[1]s: request or remove review from Copilot (not supported on GitHub Enterprise Server)
+
+			The %[1]s--add-copilot-reviewer%[1]s flag requests a new Copilot code review, even if
+			Copilot has already reviewed the pull request. Use %[1]s--review-effort%[1]s to choose
+			an effort level; the available levels depend on the repository and your account.
+			Without it, the default effort level is used. Not supported on GitHub Enterprise Server.
 		`, "`"),
 		Example: heredoc.Doc(`
 			# Edit the title and body of a pull request
@@ -122,6 +131,9 @@ func NewCmdEdit(f *cmdutil.Factory, telemetry ghtelemetry.InvocationRecorder, ru
 
 			# Request a review from GitHub Copilot
 			$ gh pr edit 23 --add-reviewer "@copilot"
+
+			# Request a Copilot code review with a specific effort level
+			$ gh pr edit 23 --add-copilot-reviewer --review-effort balanced
 
 			# Manage assignees
 			$ gh pr edit 23 --add-assignee "@me" --remove-assignee monalisa,hubot
@@ -202,6 +214,10 @@ func NewCmdEdit(f *cmdutil.Factory, telemetry ghtelemetry.InvocationRecorder, ru
 			if flags.Changed("add-reviewer") || flags.Changed("remove-reviewer") {
 				opts.Editable.Reviewers.Edited = true
 			}
+			if flags.Changed("review-effort") && !opts.AddCopilotReviewer {
+				return cmdutil.FlagErrorf("`--review-effort` requires `--add-copilot-reviewer`")
+			}
+
 			if flags.Changed("add-assignee") || flags.Changed("remove-assignee") {
 				opts.Editable.Assignees.Edited = true
 			}
@@ -227,7 +243,7 @@ func NewCmdEdit(f *cmdutil.Factory, telemetry ghtelemetry.InvocationRecorder, ru
 				return err
 			}
 
-			if !opts.Editable.Dirty() && len(opts.Assets) == 0 {
+			if !opts.Editable.Dirty() && len(opts.Assets) == 0 && !opts.AddCopilotReviewer {
 				opts.Interactive = true
 			}
 
@@ -249,6 +265,8 @@ func NewCmdEdit(f *cmdutil.Factory, telemetry ghtelemetry.InvocationRecorder, ru
 	cmd.Flags().StringVarP(&opts.Editable.Base.Value, "base", "B", "", "Change the base `branch` for this pull request")
 	cmd.Flags().StringSliceVar(&opts.Editable.Reviewers.Add, "add-reviewer", nil, "Add or re-request reviewers by their `login`. Use \"@copilot\" to request review from Copilot.")
 	cmd.Flags().StringSliceVar(&opts.Editable.Reviewers.Remove, "remove-reviewer", nil, "Remove reviewers by their `login`. Use \"@copilot\" to remove review request from Copilot.")
+	cmd.Flags().BoolVar(&opts.AddCopilotReviewer, "add-copilot-reviewer", false, "Request a code review from Copilot")
+	cmd.Flags().StringVar(&opts.ReviewEffort, "review-effort", "", "Set the Copilot code review effort `level`")
 	cmd.Flags().StringSliceVar(&opts.Editable.Assignees.Add, "add-assignee", nil, "Add assigned users by their `login`. Use \"@me\" to assign yourself, or \"@copilot\" to assign Copilot.")
 	cmd.Flags().StringSliceVar(&opts.Editable.Assignees.Remove, "remove-assignee", nil, "Remove assigned users by their `login`. Use \"@me\" to unassign yourself, or \"@copilot\" to unassign Copilot.")
 	cmd.Flags().StringSliceVar(&opts.Editable.Labels.Add, "add-label", nil, "Add labels by `name`")
@@ -323,6 +341,10 @@ func editRun(opts *EditOptions) error {
 	pr, repo, err := opts.Finder.Find(findOptions)
 	if err != nil {
 		return err
+	}
+
+	if opts.AddCopilotReviewer && ghauth.IsEnterprise(repo.RepoHost()) {
+		return errors.New("`--add-copilot-reviewer` is not supported on GitHub Enterprise Server")
 	}
 
 	// Built before the prompts, so a run that cannot upload stops early.
@@ -431,13 +453,18 @@ func editRun(opts *EditOptions) error {
 
 		// The URL below is this command's success signal, so a run that writes
 		// nothing at all must not print it.
-		if !editable.Dirty() {
+		if !editable.Dirty() && !opts.AddCopilotReviewer {
 			return errors.Join(uploadErr, errors.New("the pull request was not changed"))
 		}
 	}
 
 	opts.IO.StartProgressIndicator()
 	err = updatePullRequest(httpClient, repo, pr.ID, pr.Number, editable)
+	// Requested after the reviewer update, which replaces the whole reviewer set
+	// and could otherwise drop this request.
+	if err == nil && opts.AddCopilotReviewer {
+		err = api.RequestCopilotCodeReview(api.NewClientFromHTTP(httpClient), repo, pr.Number, opts.ReviewEffort)
+	}
 	opts.IO.StopProgressIndicator()
 	if err != nil {
 		// A failed write does not undo an upload, so both are reported.

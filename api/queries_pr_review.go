@@ -311,6 +311,32 @@ func AddPullRequestReviews(client *Client, repo ghrepo.Interface, prNumber int, 
 	return client.REST(repo.RepoHost(), "POST", path.String(), buf, nil)
 }
 
+// RequestCopilotCodeReview requests a Copilot code review for a pull request using the REST API.
+// An empty reviewEffort uses the default effort level. Not available on GHES.
+func RequestCopilotCodeReview(client *Client, repo ghrepo.Interface, prNumber int, reviewEffort string) error {
+	path, err := safeurl.JoinPath(
+		"repos",
+		repo.RepoOwner(),
+		repo.RepoName(),
+		"pulls",
+		strconv.Itoa(prNumber),
+		"copilot-code-review",
+	)
+	if err != nil {
+		return err
+	}
+	body := struct {
+		ReviewEffort string `json:"review_effort,omitempty"`
+	}{
+		ReviewEffort: reviewEffort,
+	}
+	buf := &bytes.Buffer{}
+	if err := json.NewEncoder(buf).Encode(body); err != nil {
+		return err
+	}
+	return client.REST(repo.RepoHost(), "POST", path.String(), buf, nil)
+}
+
 // RemovePullRequestReviews removes requested reviewers from a pull request using the REST API.
 // Team identifiers can be in "org/slug" format.
 func RemovePullRequestReviews(client *Client, repo ghrepo.Interface, prNumber int, users, teams []string) error {

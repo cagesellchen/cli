@@ -361,6 +361,28 @@ func TestNewCmdEdit(t *testing.T) {
 			input:    fmt.Sprintf("23 --body test --body-file '%s' --attach '%s'", tmpFile, tmpImage),
 			wantsErr: true,
 		},
+		{
+			name:  "add-copilot-reviewer flag",
+			input: "23 --add-copilot-reviewer",
+			output: EditOptions{
+				SelectorArg:        "23",
+				AddCopilotReviewer: true,
+			},
+		},
+		{
+			name:  "add-copilot-reviewer with review-effort",
+			input: "23 --add-copilot-reviewer --review-effort balanced",
+			output: EditOptions{
+				SelectorArg:        "23",
+				AddCopilotReviewer: true,
+				ReviewEffort:       "balanced",
+			},
+		},
+		{
+			name:     "review-effort without add-copilot-reviewer",
+			input:    "23 --review-effort balanced",
+			wantsErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -409,6 +431,8 @@ func TestNewCmdEdit(t *testing.T) {
 			assert.Equal(t, tt.output.Interactive, gotOpts.Interactive)
 			assert.Equal(t, tt.output.Editable, gotOpts.Editable)
 			assert.Equal(t, tt.output.BodyDir, gotOpts.BodyDir)
+			assert.Equal(t, tt.output.AddCopilotReviewer, gotOpts.AddCopilotReviewer)
+			assert.Equal(t, tt.output.ReviewEffort, gotOpts.ReviewEffort)
 
 			var assetPaths []string
 			for _, a := range gotOpts.Assets {
@@ -1646,6 +1670,148 @@ func Test_editRun(t *testing.T) {
 			},
 			wantNoLookupFields: []string{"repository"},
 			stdout:             "https://github.com/OWNER/REPO/pull/123\n",
+		},
+		{
+			name: "add-copilot-reviewer with review effort",
+			input: &EditOptions{
+				Detector:    &fd.EnabledDetectorMock{},
+				SelectorArg: "123",
+				Finder: shared.NewMockFinder("123", &api.PullRequest{
+					Number: 123,
+					URL:    "https://github.com/OWNER/REPO/pull/123",
+				}, ghrepo.New("OWNER", "REPO")),
+				AddCopilotReviewer: true,
+				ReviewEffort:       "balanced",
+				Fetcher:            testFetcher{},
+			},
+			httpStubs: func(t *testing.T, reg *httpmock.Registry) {
+				reg.Register(
+					httpmock.REST("POST", "repos/OWNER/REPO/pulls/123/copilot-code-review"),
+					httpmock.RESTPayload(201, `{"node_id":"RRR_kwDOAA","state":"PENDING"}`, func(payload map[string]any) {
+						assert.Equal(t, map[string]any{"review_effort": "balanced"}, payload)
+					}),
+				)
+			},
+			stdout: "https://github.com/OWNER/REPO/pull/123\n",
+		},
+		{
+			name: "add-copilot-reviewer without review effort",
+			input: &EditOptions{
+				Detector:    &fd.EnabledDetectorMock{},
+				SelectorArg: "123",
+				Finder: shared.NewMockFinder("123", &api.PullRequest{
+					Number: 123,
+					URL:    "https://github.com/OWNER/REPO/pull/123",
+				}, ghrepo.New("OWNER", "REPO")),
+				AddCopilotReviewer: true,
+				Fetcher:            testFetcher{},
+			},
+			httpStubs: func(t *testing.T, reg *httpmock.Registry) {
+				reg.Register(
+					httpmock.REST("POST", "repos/OWNER/REPO/pulls/123/copilot-code-review"),
+					httpmock.RESTPayload(201, `{"node_id":"RRR_kwDOAA","state":"PENDING"}`, func(payload map[string]any) {
+						assert.Empty(t, payload)
+					}),
+				)
+			},
+			stdout: "https://github.com/OWNER/REPO/pull/123\n",
+		},
+		{
+			name: "add-copilot-reviewer surfaces API errors",
+			input: &EditOptions{
+				Detector:    &fd.EnabledDetectorMock{},
+				SelectorArg: "123",
+				Finder: shared.NewMockFinder("123", &api.PullRequest{
+					Number: 123,
+					URL:    "https://github.com/OWNER/REPO/pull/123",
+				}, ghrepo.New("OWNER", "REPO")),
+				AddCopilotReviewer: true,
+				ReviewEffort:       "extreme",
+				Fetcher:            testFetcher{},
+			},
+			httpStubs: func(t *testing.T, reg *httpmock.Registry) {
+				reg.Register(
+					httpmock.REST("POST", "repos/OWNER/REPO/pulls/123/copilot-code-review"),
+					httpmock.StatusJSONResponse(422, map[string]string{
+						"message":        "Review effort is not available. Available effort levels: balanced, thorough",
+						"failure_reason": "INVALID_REVIEW_EFFORT",
+					}),
+				)
+			},
+			wantErr: "HTTP 422: Review effort is not available. Available effort levels: balanced, thorough (https://api.github.com/repos/OWNER/REPO/pulls/123/copilot-code-review)",
+		},
+		{
+			name: "add-copilot-reviewer is not supported on GHES",
+			input: &EditOptions{
+				Detector:    &fd.EnabledDetectorMock{},
+				SelectorArg: "123",
+				Finder: shared.NewMockFinder("123", &api.PullRequest{
+					Number: 123,
+					URL:    "https://example.com/OWNER/REPO/pull/123",
+				}, ghrepo.NewWithHost("OWNER", "REPO", "example.com")),
+				AddCopilotReviewer: true,
+				Fetcher:            testFetcher{},
+			},
+			wantErr: "`--add-copilot-reviewer` is not supported on GitHub Enterprise Server",
+		},
+		{
+			name: "add-copilot-reviewer still requests a review when the only upload fails",
+			input: &EditOptions{
+				Detector:    &fd.EnabledDetectorMock{},
+				SelectorArg: "123",
+				Finder: shared.NewMockFinder("123", &api.PullRequest{
+					Number:     123,
+					URL:        "https://github.com/OWNER/REPO/pull/123",
+					Body:       "the original body",
+					Repository: &api.PRRepository{DatabaseID: 1234, ViewerPermission: "WRITE"},
+				}, ghrepo.New("OWNER", "REPO")),
+				AddCopilotReviewer: true,
+				Fetcher:            testFetcher{},
+			},
+			attach:  []string{"a.png"},
+			uploads: []attachments.UploadStub{{Name: "a.png", Status: 404, Body: `{"message":"Not Found"}`}},
+			httpStubs: func(t *testing.T, reg *httpmock.Registry) {
+				reg.Exclude(t, httpmock.GraphQL(`mutation PullRequestUpdate\b`))
+				reg.Register(
+					httpmock.REST("POST", "repos/OWNER/REPO/pulls/123/copilot-code-review"),
+					httpmock.StatusStringResponse(201, `{"node_id":"RRR_kwDOAA","state":"PENDING"}`),
+				)
+			},
+			stdout:  "https://github.com/OWNER/REPO/pull/123\n",
+			wantErr: "could not upload ./a.png: attaching files requires write access to the repository",
+		},
+		{
+			name: "add-copilot-reviewer is requested after the reviewer update",
+			input: &EditOptions{
+				Detector:    &fd.EnabledDetectorMock{},
+				SelectorArg: "123",
+				Finder: shared.NewMockFinder("123", &api.PullRequest{
+					Number: 123,
+					URL:    "https://github.com/OWNER/REPO/pull/123",
+				}, ghrepo.New("OWNER", "REPO")),
+				Interactive:        false,
+				Reviewers:          shared.EditableReviewers{EditableSlice: shared.EditableSlice{Add: []string{"monalisa"}, Edited: true}},
+				AddCopilotReviewer: true,
+				Fetcher:            testFetcher{},
+			},
+			httpStubs: func(t *testing.T, reg *httpmock.Registry) {
+				mockRepoMetadata(reg, mockRepoMetadataOptions{})
+				mockPullRequestUpdate(reg)
+				var reviewersReplaced bool
+				reg.Register(
+					httpmock.GraphQL(`mutation RequestReviewsByLogin\b`),
+					httpmock.GraphQLMutation(`
+					{ "data": { "requestReviewsByLogin": { "clientMutationId": "" } } }`,
+						func(inputs map[string]any) { reviewersReplaced = true }),
+				)
+				reg.Register(
+					httpmock.REST("POST", "repos/OWNER/REPO/pulls/123/copilot-code-review"),
+					httpmock.RESTPayload(201, `{"node_id":"RRR_kwDOAA","state":"PENDING"}`, func(payload map[string]any) {
+						assert.True(t, reviewersReplaced, "the Copilot review must be requested after the reviewer update")
+					}),
+				)
+			},
+			stdout: "https://github.com/OWNER/REPO/pull/123\n",
 		},
 	}
 	for _, tt := range tests {
