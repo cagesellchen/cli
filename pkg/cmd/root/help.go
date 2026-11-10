@@ -150,10 +150,10 @@ func WriteHelp(w io.Writer, cs *iostreams.ColorScheme, command *cobra.Command) {
 	}
 
 	// Statically calculated padding for non-extension commands,
-	// longest is `gh accessibility` with 13 characters + 1 space.
+	// longest is `gh copilot-review` with 14 characters + 1 space.
 	//
 	// Should consider novel way to calculate this in the future [AF]
-	namePadding := 14
+	namePadding := 15
 
 	for _, g := range GroupedCommands(command) {
 		var names []string

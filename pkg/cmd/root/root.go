@@ -21,6 +21,7 @@ import (
 	completionCmd "github.com/cli/cli/v2/pkg/cmd/completion"
 	configCmd "github.com/cli/cli/v2/pkg/cmd/config"
 	copilotCmd "github.com/cli/cli/v2/pkg/cmd/copilot"
+	copilotReviewCmd "github.com/cli/cli/v2/pkg/cmd/copilot-review"
 	discussionCmd "github.com/cli/cli/v2/pkg/cmd/discussion"
 	extensionCmd "github.com/cli/cli/v2/pkg/cmd/extension"
 	"github.com/cli/cli/v2/pkg/cmd/factory"
@@ -164,6 +165,7 @@ func NewCmdRoot(f *cmdutil.Factory, telemetry ghtelemetry.InvocationRecorder, ve
 	repoResolvingCmdFactory.BaseRepo = factory.SmartBaseRepoFunc(f)
 
 	cmd.AddCommand(agentTaskCmd.NewCmdAgentTask(&repoResolvingCmdFactory))
+	cmd.AddCommand(copilotReviewCmd.NewCmdCopilotReview(&repoResolvingCmdFactory))
 	cmd.AddCommand(browseCmd.NewCmdBrowse(&repoResolvingCmdFactory, nil))
 	cmd.AddCommand(discussionCmd.NewCmdDiscussion(&repoResolvingCmdFactory))
 	cmd.AddCommand(prCmd.NewCmdPR(&repoResolvingCmdFactory, telemetry))
